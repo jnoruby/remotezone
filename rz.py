@@ -28,7 +28,10 @@ def main():
         zone_transitions = admin.get_zone_transitions_dict(year)
 
         # Calculate remote time zones for a worker in UTC+00:00 working 
-        # remotely with the remote shift being 09:00-17:00, For DST-keeping 
+        # remotely with the remote shift being 09:00-17:00, 
+
+        utc_results = admin.calculate_utc_tz_sets(repr_tz_d, year) 
+        # For DST-keeping 
         # time zones, this means that the UTC (or any other standard-time)
         # worker, must be available n + 1 hours for an n hour shift.
 
