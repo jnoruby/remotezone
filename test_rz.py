@@ -4,7 +4,7 @@ from admin import *
 import random
 
 all_tzs = available_timezones()
-zt = get_zone_transitions_dict(2021)
+zt_d = get_zone_transitions_dict(2021)
 all_to_repr_tz_d, repr_tz_d = get_representative_tz_dicts(2021)
 repr_tzs = list(set(v for v in all_to_repr_tz_d.values()))
 test_repr_tzs = {
@@ -81,101 +81,144 @@ test_repr_tzs = {
     (-11, -11): 'Etc/GMT+11',
     (-12, -12): 'Etc/GMT+12'}
 
+class TestLookup(unittest.TestCase):
+    # Non-DST time zones only
 
-class TestStandardTimeCalcFromUTC(unittest.TestCase):
+    zt_d = get_zone_transitions_dict(2021)
 
-    def test_standard_time_calculation_from_utc(self):
-        with open('tz_data/standard_time_results_2021.json', 'r') as f:
-            d = json.load(f)
-        for k, v in d.items():
-            offset, tz, w_start_hr, w_start_min, w_end_hr, w_end_min = k.split(' ')
-            # +7 from 11 - 21 should have 4 not 3, should have 10 but not 10:30
-            if all_to_repr_tz_d['Asia/Hovd'] == tz:
-                if (w_start_hr == 11 and w_start_min == 0
-                        and w_end_hr == 21 and w_end_min == 0):
-                    self.assertTrue('Asia/Dubai' in v)
-                    self.assertFalse('Africa/Johannesburg' in v)
-                    self.assertTrue('Australia/Brisbane' in v)
-                    self.assertFalse('Australia/Sydney' in v)
-            # -5 from 17 to 6 should have +6 but not +5:45, +11 but not +12
-            if all_to_repr_tz_d['America/Rio_Branco'] == tz:
-                if (w_start_hr == 17 and w_start_min == 0
-                        and w_end_hr == 6 and w_end_min == 0):
-                    self.assertFalse('Antarctica/South_Pole' in v)
-                    self.assertTrue('Asia/Sakhalin' in v)
-                    self.assertTrue('Asia/Dhaka' in v)
-                    self.assertFalse('Asia/Kathmandu' in v)
+    def test_start_times_shifted_by_utc_offset(self):
+        self.maxDiff = None
+        utc_results = lookup(zt_d)['remote tzs']
+        plus_4_results = lookup(zt_d, worker_tz='Asia/Dubai', 
+                                    w_start_hr=21,
+                                    w_end_hr=10)['remote tzs']
+        plus_5_75_results = lookup(zt_d, worker_tz='Asia/Kathmandu',
+                                       w_start_hr=22,
+                                       w_start_min=45,
+                                       w_end_hr=11,
+                                       w_end_min=45)['remote tzs']
+        minus_9_5_results = lookup(zt_d, worker_tz='Pacific/Marquesas',
+                                       w_start_hr=7,
+                                       w_start_min=30,
+                                       w_end_hr=20,
+                                       w_end_min=30)['remote tzs']
+        plus_14_results = lookup(zt_d, worker_tz='Pacific/Kiritimati',
+                                     w_start_hr=7,
+                                     w_start_min=0,
+                                     w_end_hr=20,
+                                     w_end_min=0)['remote tzs']
+        minus_10_results = lookup(zt_d, worker_tz='Pacific/Honolulu',
+                                      w_start_hr=7,
+                                      w_start_min=0,
+                                      w_end_hr=20,
+                                      w_end_min=0)['remote tzs']
+        self.assertEqual(utc_results, plus_4_results)
+        self.assertEqual(utc_results, plus_5_75_results)
+        self.assertEqual(utc_results, minus_9_5_results)
+        self.assertEqual(utc_results, plus_14_results)
+        self.assertEqual(utc_results, minus_10_results)
+
+    def test_off_hour_start_times_shifted_by_utc_offset(self):
+        self.maxDiff = None
+        utc_results_off_hour = lookup(zt_d, w_start_min=30)['remote tzs']
+        plus_4_results_off_hour = lookup(zt_d, 
+                worker_tz='Asia/Dubai',
+                w_start_hr=21,
+                w_start_min=30,
+                w_end_hr=10)['remote tzs']
+        plus_5_75_results_off_hour = lookup(zt_d, 
+                worker_tz='Asia/Kathmandu',
+                w_start_hr=23,
+                w_start_min=15,
+                w_end_hr=11,
+                w_end_min=45)['remote tzs']
+        minus_9_5_results_off_hour = lookup(zt_d, 
+                worker_tz='Pacific/Marquesas',
+                w_start_hr=8,
+                w_start_min=0,
+                w_end_hr=20,
+                w_end_min=30)['remote tzs']
+        self.assertEqual(utc_results_off_hour, plus_4_results_off_hour)
+        self.assertEqual(utc_results_off_hour, plus_5_75_results_off_hour)
+        self.assertEqual(utc_results_off_hour, minus_9_5_results_off_hour)
+
+    def test_non_overlapping_dst_removal(self):
+        
+        def get_only_tz_name(in_tuple):
+            return tuple(t[0] for t in in_tuple)
+        self.maxDiff = None
+
+        zt_d = get_zone_transitions_dict(2021)
+
+        # 8 hour shift in New York (regular remote shift) from 17 to 1 has no 
+        #   remote tzs. Potential match 'Pacific/Norfolk' is in +11/+12 but 
+        #   has misaligned DST.
+        r_tz_d = lookup(zt_d, worker_tz='America/New_York', w_start_hr=17, w_end_hr=1)
+        self.assertEqual(tuple(), r_tz_d['remote tzs'])
+        self.assertTrue(all_to_repr_tz_d['Pacific/Norfolk'] 
+                        in get_only_tz_name(r_tz_d['failed']))
+        # 8 hour shift in New York (regular remote shift) from 16 to 0 has no 
+        #   remote tzs. Potential match 'Pacific/Auckland' is in +12/+13 but 
+        #   has misaligned DST.
+        r_tz_d = lookup(zt_d, worker_tz='America/New_York', w_start_hr=16, w_end_hr=0)
+        self.assertEqual(tuple(), r_tz_d['remote tzs'])
+        self.assertTrue(all_to_repr_tz_d['Pacific/Auckland']
+                        in get_only_tz_name(r_tz_d['failed']))
+        # 8 hour shift in New York (regular remote shift) from 15 to 23 has no 
+        #   remote tzs. Potential match 'Pacific/Apia' is in +13/+14 but 
+        #   has misaligned DST.
+        r_tz_d = lookup(zt_d, worker_tz='America/New_York', w_start_hr=15, w_end_hr=23)
+        self.assertEqual(tuple(), r_tz_d['remote tzs'])
+        self.assertTrue(all_to_repr_tz_d['Pacific/Apia'] 
+                        in get_only_tz_name(r_tz_d['failed']))
+        # Because North America shifts in successive hours at the same local time 
+        # rather than at the same UTC time, North American time zones are near-misses
+        r_tz_d = lookup(zt_d, worker_tz='America/Yellowknife', w_start_hr=7, w_end_hr=15)
+        self.assertTrue(all_to_repr_tz_d['America/Detroit']
+                        in get_only_tz_name(r_tz_d['failed but within hours']))
+        # Same occurs between otherwise coordinated DST Europe and Moldova
+        r_tz_d = lookup(zt_d, worker_tz='Europe/Bucharest', w_start_hr=9, w_end_hr=17)
+        self.assertTrue(all_to_repr_tz_d['Europe/Tiraspol']
+                        in get_only_tz_name(r_tz_d['failed but within hours']))
+        self.assertTrue(all_to_repr_tz_d['Europe/Kiev']
+                        in get_only_tz_name(r_tz_d['remote tzs']))
+        # The Levant is mostly coordinated with Europe, except Lebanon 
+        # goes at 00:00 local time rather than 02:00 UTC (04:00 local)
+        self.assertTrue(all_to_repr_tz_d['Asia/Beirut']
+                        in get_only_tz_name(r_tz_d['failed but within hours']))
+        # and other Levantine countries use local definitions of the weekend
+        self.assertTrue(all_to_repr_tz_d['Asia/Damascus']
+                        in get_only_tz_name(r_tz_d['failed but within a week']))
+        self.assertTrue(all_to_repr_tz_d['Asia/Hebron']
+                        in get_only_tz_name(r_tz_d['failed but within a week']))
+        self.assertTrue(all_to_repr_tz_d['Asia/Jerusalem']
+                        in get_only_tz_name(r_tz_d['failed but within a week']))
+        self.assertTrue(all_to_repr_tz_d['Asia/Amman']
+                        in get_only_tz_name(r_tz_d['failed but within a week']))
+        # Other DST time zones are distant enough to have to take weeks off for 
+        # remote work to function, or be willing to be flexible an hour during 
+        # these times - like Mexico within 20km of US and Mexico not
+        r_tz_d = lookup(zt_d, worker_tz='America/Ojinaga', w_start_hr=9, w_end_hr=17)
+        self.assertTrue(all_to_repr_tz_d['America/Mazatlan']
+                        in get_only_tz_name(r_tz_d['failed but within weeks']))
+        # Or between North America and Europe (here represented by Greenland)
+        r_tz_d = lookup(zt_d, worker_tz='America/Ojinaga', w_start_hr=3, w_end_hr=11)
+        self.assertTrue(all_to_repr_tz_d['America/Scoresbysund']
+                        in get_only_tz_name(r_tz_d['failed but within weeks']))
+        
+        
+        # Pacific/Auckland and Pacific/Apia are in the same DST shift set:
+        # 8 hour shift for worker in Samoa working remotely at South Pole (NZ
+        #   time) has a match one hour behind
+        r_tz_d = lookup(zt_d, worker_tz='Pacific/Apia', w_start_hr=10, w_end_hr=18)
+        self.assertTrue(all_to_repr_tz_d['Antarctica/South_Pole'] 
+                        in get_only_tz_name(r_tz_d['remote tzs']))
+        # Same UTC time in Chile also 
+        r_tz_d = lookup(zt_d, worker_tz='America/Santiago', w_start_hr=11, w_end_hr=19)
+        self.assertTrue(all_to_repr_tz_d['Pacific/Easter'] 
+                        in get_only_tz_name(r_tz_d['remote tzs']))
 
 
-class TestTZByRange(unittest.TestCase):
-
-    def test_utc(self):
-        self.tz = 'UTC'
-
-        def test_availability_too_short(self):
-            start_hr = random.randint(0, 24)
-            end_hr = start_hr + 7
-            end_hr = end_hr if end_hr < 24 else end_hr - 24
-            self.assertEqual(list(), calculate_remote_tzs(repr_tz_d,
-                                                          worker_tz=self.tz,
-                                                          w_start_hr=start_hr,
-                                                          w_end_hr=end_hr))
-
-        def test_24_hr_availability(self):
-            start_hr = random.randint(0, 24)
-            end_hr = start_hr
-            self.assertEqual(list(repr_tz_d),
-                             calculate_remote_tzs(repr_tz_d,
-                                                  worker_tz=self.tz,
-                                                  w_start_hr=start_hr,
-                                                  w_end_hr=end_hr))
-
-        def test_8_hr_worker(self):
-            # Should be 8 to the east (17 - 9) and 16 to the west (17 - 1)  only.
-            # Actually could be other direction. TODO SLEEP
-
-            def configure_variables(start_hr, start_min, end_hr, end_min):
-                remote_repr_tzs = calculate_remote_tzs(repr_tz_d,
-                                                       worker_tz=self.tz,
-                                                       w_start_hr=start_hr,
-                                                       w_start_min=start_min,
-                                                       w_end_hr=end_hr,
-                                                       w_end_min=end_min)
-                remote_tzs = get_all_tzs_matching_repr_tzs(remote_repr_tzs,
-                                                           all_to_repr_tz_d)
-                return remote_tzs
-
-            remote_tzs = configure_variables(17, 0, 1, 0)
-            self.assertFalse('Etc/GMT+9' in remote_tzs)  # -9, -9
-            self.assertFalse('America/Nome' in remote_tzs)  # -9, -8
-            self.assertTrue('Pacific/Pitcairn' in remote_tzs)  # ===== -8
-            self.assertFalse('US/Pacific' in remote_tzs)  # -8, -7
-            self.assertFalse('Canada/Yukon' in remote_tzs)  # -7, -7
-
-            remote_tzs = configure_variables(23, 0, 7, 0)
-            self.assertFalse('Australia/North' in remote_tzs)  # +9.5, +9.5
-            self.assertFalse('Australia/Adelaide' in remote_tzs)  # +9.5, +10.5
-            self.assertTrue('Australia/Lindeman' in remote_tzs)  # ==== +10
-            self.assertFalse('Australia/Currie' in remote_tzs)  # +10, +11
-            self.assertFalse('Australia/Lord_Howe' in remote_tzs)  # +10.5, +11
-
-            remote_tzs = configure_variables(5, 0, 13, 0)
-            self.assertFalse('Europe/Kirov' in remote_tzs)  # +3, +3
-            self.assertFalse('Asia/Tehran' in remote_tzs)  # +3.5, 4.5
-            self.assertTrue('Asia/Dubai' in remote_tzs)  # ==== +4
-            self.assertFalse('Asia/Kabul' in remote_tzs)  # +4.5, +4.5
-            self.assertFalse('Asia/Ashkhabad' in remote_tzs)  # +5, +5
-
-            remote_tzs = configure_variables(11, 0, 19, 0)
-            self.assertFalse('America/Sao_Paulo' in remote_tzs)  # -3 -3
-            self.assertTrue('Atlantic/South_Georgia' in remote_tzs)  # -2, -2
-            self.assertFalse('Atlantic/Azores' in remote_tzs)  # -1 -1
-
-            remote_tzs = None
-
-        test_availability_too_short(self)
-        test_24_hr_availability(self)
-        test_8_hr_worker(self)
 
 
 if __name__ == "__main__":

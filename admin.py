@@ -7,9 +7,173 @@ from dateutil import parser
 from zoneinfo import ZoneInfo, available_timezones
 from consts import *
 
-import pprint
+
+def get_max_dst_distance_two_zones(tz1, tz2, year=datetime.now().year):
+    d = get_zone_transitions_dict(year)
+    zt1, zt2 = d[tz1], d[tz2]
+    if len(zt1) != len(zt2):
+        dst_distance = timedelta(days=365)
+    else:
+        dst_distance = abs(zt1[0] - zt2[0])
+        for i in range(1, len(zt1)):
+            if abs(zt1[i] - zt2[i]) > dst_distance:
+                dst_distance = abs(zt1[i] - zt2[i])
+    if zt1 == zt2:  # same timezone
+        dst_distance = timedelta(seconds=0)
+    return dst_distance
 
 
+def get_dst_zone_transition_non_alignment_types(year=datetime.now().year):
+    filename = f'tz_data/zt_nonalignment_lookup_{year}.pickle'
+    _, repr_tz_d = get_representative_tz_dicts(year)
+
+    def get_misalignment_category(dst_distance):
+        if dst_distance == timedelta(seconds=0):
+            misalignment_category = None
+        elif timedelta(seconds=1) <= dst_distance < timedelta(seconds=12*3600):
+            misalignment_category = 'hours'
+        elif timedelta(seconds=12*3600) <= dst_distance < timedelta(days=7):
+            misalignment_category = 'within a week'
+        elif timedelta(days=7) <= dst_distance < timedelta(days=30):
+            misalignment_category = 'weeks'
+        else:  # dst_distance >= timedelta(days=30):
+            misalignment_category = 'months'
+        return misalignment_category
+
+    try:
+        with open(filename, 'rb') as f:
+            zt_nonalignment_d = pickle.load(f)
+    except FileNotFoundError:
+        zt_nonalignment_d = {}
+        dst_repr_tzs = [tz for tz in repr_tz_d.keys() 
+                        if has_zone_transitions(tz)]
+        for tz1 in dst_repr_tzs:
+            for tz2 in dst_repr_tzs:
+                dst_distance = get_max_dst_distance_two_zones(tz1, tz2)
+                misalignment_category = get_misalignment_category(dst_distance)
+                zt_nonalignment_d[(tz1, tz2)] = misalignment_category
+        with open(filename, 'wb') as f:
+            pickle.dump(zt_nonalignment_d, f)
+    return zt_nonalignment_d
+
+
+def lookup(zt_d, worker_tz='UTC', year=datetime.now().year, w_start_hr=17,
+           w_start_min=0, w_end_hr=6, w_end_min=0, r_start_hr=9,
+           r_start_min=0, r_end_hr=17, r_end_min=0):
+
+    def to_utc(month, day, w_hr, w_min):
+        return datetime(year, month, day, w_hr, w_min, 
+                        tzinfo=ZoneInfo(worker_tz)).astimezone(ZoneInfo('UTC'))
+
+    def is_southern_hemisphere(dts):
+        """ Direction of DST transition """
+        if dts.index(min(dts, key=lambda x: x.tzinfo.utcoffset(x))):
+            return True
+        else:
+            return False
+
+    failed_but_within_hours = []
+    failed_but_within_a_week = []
+    failed_but_within_weeks = []
+    failed = []
+
+    filename = f'tz_data/utc_based_results_dict_{year}.pickle'
+    with open(filename, 'rb') as f:
+        d = pickle.load(f)
+    if worker_tz == 'UTC':
+        lookup_str = (f'UTC+00:00 {w_start_hr} {w_start_min} {w_end_hr} '
+                      f'{w_end_min}')
+        remote_tzs = d[lookup_str]
+    elif not has_zone_transitions(worker_tz):
+        # For a time zone without DST it doesn't matter what day we use to get
+        # equivalent UTC time. 
+        utc_start_dt = to_utc(6, 1, w_start_hr, w_start_min)
+        utc_end_dt = to_utc(6, 1, w_end_hr, w_end_min)
+        lookup_str = (f'UTC+00:00 {utc_start_dt.hour} {utc_start_dt.minute}'
+                      f' {utc_end_dt.hour} {utc_end_dt.minute}')
+        remote_tzs = d[lookup_str]
+    # DST time zone
+    else:
+        # Use the day AFTER zone transitions for defining UTC offset to avoid 
+        # error caused by using an end hour before the transition time. NOTE:
+        # current version assumes a constant weekday shift in remote zone.
+        test_zts = [zt + timedelta(days=1) for zt in zt_d[worker_tz]]
+        # Only check if the DST time zones are in a category of misalignment,
+        # rather than returning exact days, which can just be defined in a list.
+        misalignment_d = get_dst_zone_transition_non_alignment_types(year)
+        all_to_repr_tz_d, _ = get_representative_tz_dicts(year)
+
+        # For DST time zone, define search range (n + 1) compared to n for 
+        # a standard time zone equivalent. Valid remote time zones include 
+        # other DST time zones that are in the larger range.
+        utc_start_dts = [to_utc(dt.month, dt.day, w_start_hr, w_start_min)
+                         for dt in test_zts]
+        utc_end_dts = [to_utc(dt.month, dt.day, w_end_hr, w_end_min)
+                       for dt in test_zts]
+
+        # Determine which transition dates are standard, DST (hemispheric)
+        local_transitions = [dt.astimezone(ZoneInfo(worker_tz)) 
+                             for dt in utc_start_dts]
+        is_southern = is_southern_hemisphere(local_transitions)
+        dst_start_dt = utc_start_dts[0] if is_southern else utc_start_dts[1]
+        std_end_dt = utc_end_dts[1] if is_southern else utc_end_dts[0]
+        
+        lookup_str = (f'UTC+00:00 {dst_start_dt.hour} {dst_start_dt.minute}'
+                      f' {std_end_dt.hour} {std_end_dt.minute}')
+        whole_range = d[lookup_str]
+
+        # Figure out a way to check only at temporal edges, reduce expense TODO
+        remote_tzs = list(whole_range)
+        for r_tz_tuple in whole_range:
+            r_tz = r_tz_tuple[0]
+            if 0 < worker_can_work_in_tz(worker_tz, r_tz, zt_d, test_zts,
+                                         year=year, w_start_hr=w_start_hr, 
+                                         w_start_min=w_start_min, 
+                                         r_start_hr=r_start_hr,
+                                         r_start_min=r_start_min,
+                                         w_length=shift_length(
+                                             w_start_hr, w_start_min,
+                                             w_end_hr, w_end_min),
+                                         r_length=shift_length(
+                                             r_start_hr, r_start_min,
+                                             r_end_hr, r_end_min)):
+                remote_tzs.remove(r_tz_tuple)
+            w_repr_tz = all_to_repr_tz_d[worker_tz]
+            r_repr_tz = all_to_repr_tz_d[r_tz]
+            # Get range of time where remote work fails due to misaligned DST
+            try:
+                misalignment_category = misalignment_d[(w_repr_tz, r_repr_tz)]
+            except KeyError:
+                misalignment_category = None
+            if misalignment_category == 'hours':
+                failed_but_within_hours.append(r_tz_tuple)
+            elif misalignment_category == 'within a week':
+                failed_but_within_a_week.append(r_tz_tuple)
+            elif misalignment_category == 'weeks':
+                failed_but_within_weeks.append(r_tz_tuple)
+            elif misalignment_category == 'months':
+                failed.append(r_tz_tuple)
+
+        failed_but_within_hours = tuple(failed_but_within_hours)
+        failed_but_within_a_week = tuple(failed_but_within_a_week)
+        failed_but_within_weeks = tuple(failed_but_within_weeks)
+        failed = tuple(failed)
+        remote_tzs = tuple(remote_tzs)
+
+        remote_tzs = tuple(tz for tz in remote_tzs if
+                           tz not in failed_but_within_hours and
+                           tz not in failed_but_within_a_week and
+                           tz not in failed_but_within_weeks and
+                           tz not in failed)
+
+    return {'remote tzs': remote_tzs,
+            'failed but within hours': failed_but_within_hours,
+            'failed but within a week': failed_but_within_a_week,
+            'failed but within weeks': failed_but_within_weeks,
+            'failed': failed
+            }
+
+        
 def calculate_remote_tzs(repr_tz_d, worker_tz='UTC', year=datetime.now().year,
                          w_start_hr=19, w_start_min=0, w_end_hr=7, w_end_min=0,
                          r_start_hr=9, r_start_min=0, r_end_hr=17, r_end_min=0):
@@ -68,11 +232,6 @@ def calculate_remote_tzs(repr_tz_d, worker_tz='UTC', year=datetime.now().year,
                                             r_length=shift_length(
                                                 r_start_hr, r_start_min,
                                                 r_end_hr, r_end_min))
-        # TODO calculate the other parts of the tuple when set of unique
-        # TODO remote zone lists is created, along with dictionary where key
-        # TODO is the remote zone list and value is list of worker zones and
-        # TODO times. That will also be ranges when accessing data from client
-        # TODO information
         standard_offset = get_standard_offset(tz, year)
         dst_offset = (get_standard_offset(tz, year)
                       if not has_zone_transitions(tz, year) else
@@ -83,15 +242,6 @@ def calculate_remote_tzs(repr_tz_d, worker_tz='UTC', year=datetime.now().year,
 
 
 def calculate_utc_tz_sets(repr_tz_d, year=datetime.now().year):
-    # TODO just do UTC first, then apply with shift to all non-DST TZs.
-    # Same model and then shift for other smaller groups like Europe and Chile.
-    # TODO then make the process for non-DST to all much faster by
-    # just using subtraction to get a range, then check (always in)
-    # TODO then make the process for DST to all much faster by
-    # just using subtraction to get a (smaller DST-aware range),
-    # then (depending on day miss tolerances) subtract uncoordinated zone
-    # transition matches from the edge.
-    # TODO these will be matches for equivalent non-9 to 5 shifts also
     utc_results = {}
     for w_start_hr in range(0, 24):
         for w_start_min in [0, 1, 15, 16, 30, 31, 45, 46]:
@@ -107,10 +257,6 @@ def calculate_utc_tz_sets(repr_tz_d, year=datetime.now().year):
                         w_start_min=w_start_min,
                         w_end_hr=w_end_hr,
                         w_end_min=w_end_min))
-                    print(f'UTC worker'
-                          f'starting at {w_start_hr}:{w_start_min}',
-                          f'working until {w_end_hr}:{w_end_min}'
-                          f'can work in {utc_results[k]}')
     s = set(v for v in utc_results.values())
     filename_all = f'tz_data/utc_based_results_dict_{year}.pickle'
     filename_set = f'tz_data/utc_based_results_dict_set_{year}.pickle'
@@ -119,115 +265,6 @@ def calculate_utc_tz_sets(repr_tz_d, year=datetime.now().year):
     with open(filename_set, 'wb') as f:
         pickle.dump(s, f)
     return utc_results
-
-
-def calculate_simple_shift_from_utc(repr_tz_d, utc_set, utc_dict,
-                                    unique_set_utc,
-                                    year=datetime.now().year):
-    """
-    # TODO this open will be contingent on file existing, not an update
-    # TODO in this run:
-    # filename = f' tz_data/utc_based_results_dict_{year}.pickle'
-    # with open(filename, 'r') as f:
-    #    utc_results = pickle.load(f)
-    standard_time_results = {}
-    for k1, v1 in repr_tz_d.items():
-        # First step calculates from UTC for standard time only. But for DST
-        # worker time zones can just test edges with function on DST time shift
-        # equality. Can be old complex one or new one using transition dates
-        # and returning bad periods.
-        minutes = int(v1[0].days * 24 * 60 + v1[0].seconds / 60)
-        hours = minutes // 60
-        minutes_off_hour = minutes % 60
-        new_utcoffset_str = f'UTC{str(hours).zfill(2)}:' \
-                            f'{str(minutes_off_hour).zfill(2)}'
-    """
-    def correct_into_24(hrs):
-        if hrs > 23:
-            return hrs - 24
-        elif hrs < 0:
-            return hrs + 24
-        else:
-            return hrs
-
-    def adjust_hours_minutes_by_offset(utc_hr, utc_min, all_minutes,
-                                       hours, minutes_off_hour):
-        if all_minutes > 0:
-            offset_hr = int(utc_hr) + hours
-            offset_min = int(utc_min) + minutes_off_hour
-        else:
-            offset_hr = int(utc_hr) - hours
-            offset_min = int(utc_min) - minutes_off_hour
-        offset_hr = correct_into_24(offset_hr)
-        return offset_hr, offset_min
-<<<<<<< HEAD
-
-    standard_time_results = {}
-
-=======
-
-    standard_time_results = {}
-
->>>>>>> ecd648a (dictionary for all standard time offsets copied from utc 09:00-17:00)
-    for k, v in unique_set_utc.items():
-        new_vals = [val for val in v]
-        for subval in v:
-            for k2, v2, in repr_tz_d.items():
-                (_, utc_start_hr, utc_start_min, utc_end_hr,
-                utc_end_min) = subval.split(' ')
-                all_minutes = int(v2[0].days * 24 * 60 + v2[0].seconds / 60)
-                hours = all_minutes // 60
-                minutes_off_hour = all_minutes % 60
-                new_utcoffset_str = (f'UTC{str(hours).zfill(2)}:'
-                                     f'{str(minutes_off_hour).zfill(2)}')
-                offset_start_hr, offset_start_min = (
-                    adjust_hours_minutes_by_offset(utc_start_hr, utc_start_min,
-                                                   all_minutes, hours,
-                                                   minutes_off_hour))
-                offset_end_hr, offset_end_min = (
-                    adjust_hours_minutes_by_offset(utc_end_hr, utc_end_min,
-                                                   all_minutes, hours,
-                                                   minutes_off_hour))
-                offset_val = (f'{new_utcoffset_str} {k2} '
-                              f'{offset_start_hr} {offset_start_min} '
-                              f'{offset_end_hr} {offset_end_min}')
-                new_vals.append(offset_val)
-        standard_time_results[k] = new_vals
-
-    """
-    for k, v in utc_results.items():
-
-            (_, w_start_hr, w_start_min, w_end_hr, w_end_min) = k.split(' ')
-            if minutes > 0:
-                new_w_start_hr = int(w_start_hr) + hours
-                new_w_start_min = int(w_start_min) + minutes_off_hour
-            else:
-                new_w_start_hr = int(w_start_hr) - hours
-                new_w_start_min = int(w_start_min) - minutes_off_hour
-            new_w_start_hr = correct_into_24(new_w_start_hr)
-            if minutes > 0:
-                new_w_end_hr = int(w_end_hr) + hours
-                new_w_end_min = int(w_end_min) + minutes_off_hour
-            else:
-                new_w_end_hr = int(w_end_hr) - hours
-                new_w_end_min = int(w_end_min) - minutes_off_hour
-            new_w_end_hr = correct_into_24(new_w_end_hr)
-            new_key = (f'{new_utcoffset_str} {k1}'
-                       f' {new_w_start_hr} {new_w_start_min} {new_w_end_hr} '
-                       f'{new_w_end_min}')
-            standard_time_results[new_key] = v
-            # print(standard_time_results[new_key])
-    # TODO as this is too slow the set of uniques must be done first.
-    d1, d2 = subtract_edge_dst_tzs(repr_tz_d, standard_time_results, year=year)
-    standard_time_results = d1
-    non_overlapping_dst = d2
-    """
-    filename = f'tz_data/standard_time_results_{year}.pickle'
-
-    with open(filename, 'wb') as f:
-        pickle.dump(standard_time_results, f)
-
-    return standard_time_results
 
 
 def configure_starts_ends(
@@ -257,24 +294,6 @@ def configure_starts_ends(
 
 def create_remote_tz_sets(repr_tz_d, year=datetime.now().year):
 
-<<<<<<< HEAD
-=======
-
-
-
-
->>>>>>> ecd648a (dictionary for all standard time offsets copied from utc 09:00-17:00)
-    # TODO fix the above function to load pickle if exists
-    # TODO load pickle and create reverse set with key being timezone sets
-    # and value being a tuple of all of the UTC combos calculated
-    # n n n n (worker times) 9 0 17 0 (remote times)
-    # TODO change simple_shift function to add to those tuples
-    # TODO do the same to move remote shift times around the clock
-    # data are enough
-    # Then remove from these tuples for each non-DST time zones,
-    # successively, those which create no match for 2 hours a year
-    # those which create no match for a few days a year
-    # those which create no match for a few weeks a year
     filename = f'tz_data/utc_based_results_dict_{year}.pickle'
     filename_set = f'tz_data/utc_based_results_dict_set_{year}.pickle'
     try:
@@ -284,58 +303,14 @@ def create_remote_tz_sets(repr_tz_d, year=datetime.now().year):
             utc_set = pickle.load(f_set)
     except FileNotFoundError:
         utc_dict = calculate_utc_tz_sets(repr_tz_d, year)
-<<<<<<< HEAD
-    # Make dictionary reverse - all possible remote tz sets in UTC, with
-    # values being the start and stop times that create those sets for
-    # remote work time 09:00-17:00
-=======
->>>>>>> ecd648a (dictionary for all standard time offsets copied from utc 09:00-17:00)
     unique_remote_tzs_to_utc_time_values = {}
-    for l in list(utc_set):
+    for item in list(utc_set):
         temp = []
         for k, v in utc_dict.items():
-            if v == l:
+            if v == item:
                 temp.append(k)
-        unique_remote_tzs_to_utc_time_values[l] = temp
-    print(unique_remote_tzs_to_utc_time_values)
-<<<<<<< HEAD
-    # Add to the reverse dictionary every start and stop time from all
-    # representative worker time zones, not yet adjusted for DST transition
-    # non-overlap
-=======
-
->>>>>>> ecd648a (dictionary for all standard time offsets copied from utc 09:00-17:00)
-    repr_tzs_r_tz_set_nodst = (
-        calculate_simple_shift_from_utc(repr_tz_d, utc_set, utc_dict,
-                                        unique_remote_tzs_to_utc_time_values))
-
-<<<<<<< HEAD
-    r_tzs, r_tzs_fail_dst_hours, r_tzs_fail_days, r_tzs_fail_weeks = (
-        remove_edge_uncoordinated_transition_dst_tzs(
-            repr_tzs_r_tz_set_nodst)
-        )
-    )
-
-    # todo make a dictionary lookup function that takes these written
-    # todo dictionaries and looks up based on variables. test all
-    # representative time zones, times
-    # todo, then redo dictionaries to include all times offset over from
-    # 09:00 - 17:00 - that will be on the calculate_simple_shift step
-    # todo then redo dst removal
-    return repr_tzs_r_tz_set_nodst
-
-
-def remove_edge_uncoordinated_transition_dst_tzs(repr_tzs_r_tz_set_nodst):
-    r_tzs = {}
-    r_tz_fail_dst_hours = {}
-    r_tzs_fail_days = {}
-    r_tzs_fail_weeks = {}
-    return r_tzs, r_tzs_fail_dst_hours, r_tzs_fail_days, r_tzs_fail_weeks
-=======
-    # year)
-
-    return repr_tzs_r_tz_set_nodst
->>>>>>> ecd648a (dictionary for all standard time offsets copied from utc 09:00-17:00)
+        unique_remote_tzs_to_utc_time_values[item] = temp
+    return unique_remote_tzs_to_utc_time_values
 
 
 def get_all_tzs_matching_repr_tzs(repr_tzs, all_to_repr_tz_d):
@@ -370,14 +345,7 @@ def get_representative_tz_dicts(year=datetime.now().year):
     try:
         with open(repr_tzs_updated_path, 'rb') as infile:
             old_update = pickle.load(infile)
-            print(f'Latest determination of representative time zones in {year}'
-                  f' is from {old_update}')
-            new_enough = timedelta(days=7)
-            print(datetime.now())
-            print(old_update)
-            print(new_enough)
             if old_update + timedelta(days=7) > datetime.now():
-                print(f'As it is less than {new_enough}, not recalculating.')
                 repr_path = f'tz_data/repr_tz_d_{year}.pickle'
                 all_to_repr_path = f'tz_data/all_to_repr_tz_d_{year}.pickle'
                 with open(repr_path, 'rb') as infile1:
@@ -498,10 +466,6 @@ def get_zone_transitions_dict(year=datetime.now().year):
             (or are predicted to occur) zone transitions
         :rtype: dict
     """
-    # TODO allow argument to be an arbitrary datetime span, not just a
-    # calendar year.
-    # TODO make aware of any updates from zoneinfo (from system or tz data)
-    # and update those years (past, present, or future) on that update.
     filename = f'tz_data/zone_transitions_{year}.pickle'
     try:
         with open(filename, 'rb') as fd:
@@ -716,29 +680,6 @@ def remote_day_within_worker_day(w_bounds):
 def shift_length(s_hr, s_min, e_hr, e_min):
     s = timedelta(seconds=((3600 * (e_hr - s_hr)) + (60 * (e_min - s_min))))
     return s if s > timedelta(seconds=0) else s + timedelta(days=1)
-
-
-def subtract_edge_dst_tzs(repr_tz_d, standard_time_results,
-                          year=datetime.now().year):
-    # Subtract time zones that would be in the worker's range,
-    # but are not because while they would be in range if they
-    # changed to and from DST at the same times as the worker
-    # they do not because of non-overlap. This non-overlap time
-    # can be as little as an hour, such as in the rolling DST
-    # transitions in North America, all at the same local time
-    # but at different hours DST, to time zones that are non-
-    # overlapping by mere days (Israel/Palestine) or by several
-    # weeks. European Union / Lebanon vs. Canada, USA, 20km of
-    # Mexico, Cuba. Should return which time zones are
-    # excluded and by how much so they can be a different color
-    # on the map or in red with a warning (not possible Nov 12
-    pprint.pprint(repr_tz_d)
-    print(year)
-    still_within_range = {}
-    non_overlapping_dst = {}
-    pprint.pprint(standard_time_results)
-    standard_time_results = still_within_range
-    return standard_time_results, non_overlapping_dst
 
 
 def worker_can_work_in_tz(w_tz, r_tz, zone_transitions,
