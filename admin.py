@@ -166,6 +166,8 @@ def lookup(zt_d, worker_tz='UTC', year=datetime.now().year, w_start_hr=17,
                            tz not in failed_but_within_weeks and
                            tz not in failed)
 
+        print(lookup_str)
+
     return {'remote tzs': remote_tzs,
             'failed but within hours': failed_but_within_hours,
             'failed but within a week': failed_but_within_a_week,
@@ -244,9 +246,9 @@ def calculate_remote_tzs(repr_tz_d, worker_tz='UTC', year=datetime.now().year,
 def calculate_utc_tz_sets(repr_tz_d, year=datetime.now().year):
     utc_results = {}
     for w_start_hr in range(0, 24):
-        for w_start_min in [0, 1, 15, 16, 30, 31, 45, 46]:
+        for w_start_min in TEST_MINUTE_SET:
             for w_end_hr in range(0, 24):
-                for w_end_min in [0, 1, 15, 30, 31, 45, 46]:
+                for w_end_min in TEST_MINUTE_SET:
                     k = (f'UTC+00:00 {w_start_hr} {w_start_min} '
                          f'{w_end_hr} {w_end_min}')
                     utc_results[k] = tuple(calculate_remote_tzs(
@@ -257,6 +259,7 @@ def calculate_utc_tz_sets(repr_tz_d, year=datetime.now().year):
                         w_start_min=w_start_min,
                         w_end_hr=w_end_hr,
                         w_end_min=w_end_min))
+                    print(f'{w_start_hr} {w_start_min} {w_end_hr} {w_end_min}')
     s = set(v for v in utc_results.values())
     filename_all = f'tz_data/utc_based_results_dict_{year}.pickle'
     filename_set = f'tz_data/utc_based_results_dict_set_{year}.pickle'
