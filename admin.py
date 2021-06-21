@@ -2,10 +2,328 @@ import json
 import pickle
 import requests
 import datetime as dt
+from collections import defaultdict
 from datetime import datetime, timedelta
 from dateutil import parser
 from zoneinfo import ZoneInfo, available_timezones
 from consts import *
+
+
+""" USED IN LATEST VERSION  """
+    # get_year() )
+    # get_transitions_dict() - updating an old version with more efficiency
+    # get_repr_tz_dicts() - updating an old version with both offsets in dict
+    #   get_offsets()
+    # get_dst_transition_misalignment_type_d() - update
+"""                         """
+
+def get_dst_misalignment_d(dst_repr_tz_d, year=datetime.now().year, 
+                           overwrite=False):
+    
+    def write_dst_misalignment_dict(dst_repr_tz_d):
+        misalignment_d = dict()
+        for tz1, data in dst_repr_tz_d.items():
+            zt1 = data[1]
+            for tz2, data in dst_repr_tz_d.items():
+                zt2 = data[1]
+                dst_distance = get_max_misalignment(zt1, zt2)
+                misalignment_category = get_misalignment_category(dst_distance)
+                misalignment_d[(tz1, tz2)] = misalignment_category
+        with open(filename, 'wb') as f:
+            pickle.dump(misalignment_d, f)
+        return misalignment_d
+
+    def get_misalignment_category(dst_distance):
+        if dst_distance == timedelta(seconds=0):
+            misalignment_category = None
+        elif timedelta(seconds=1) <= dst_distance < timedelta(seconds=12*3600):
+            misalignment_category = 'hours'
+        elif timedelta(seconds=12*3600) <= dst_distance < timedelta(days=7):
+            misalignment_category = 'within a week'
+        elif timedelta(days=7) <= dst_distance < timedelta(days=30):
+            misalignment_category = 'weeks'
+        else:  # dst_distance >= timedelta(days=30):
+            misalignment_category = 'months'
+        return misalignment_category
+
+    def get_max_misalignment(zt1, zt2, year=datetime.now().year):
+        print(zt1)
+        print(zt2)
+        if len(zt1) != len(zt2):
+            dst_distance = timedelta(days=365)
+        else:
+            dst_distance = abs(zt1[0] - zt2[0])
+            for i in range(1, len(zt1)):
+                if abs(zt1[i] - zt2[i]) > dst_distance:
+                    dst_distance = abs(zt1[i] - zt2[i])
+        if zt1 == zt2:  # same timezone
+            dst_distance = timedelta(seconds=0)
+        return dst_distance
+
+    filename = f'rz_data/zt_nonalignment_lookup_{year}.pickle'
+    if not overwrite:
+        try:
+            with open(filename, 'rb') as f:
+                misalignment_d = pickle.load(f)
+        except FileNotFoundError:
+            misalignment_d = write_dst_misalignment_dict(dst_repr_tz_d)
+    else:
+        misalignment_d = write_dst_misalignment_dict(dst_repr_tz_d)
+    return misalignment_d
+
+
+def get_transitions_dict(year=datetime.now().year, overwrite=False):
+
+    def write_transitions_dict(filename, year, tzs):
+        zone_transitions_d = dict()
+        for tz in tzs:
+            zone_transitions = get_transitions_from_hourly_dts(tz, year)
+            zone_transitions_d[tz] = zone_transitions
+        with open(filename, 'wb') as fd:
+            pickle.dump(zone_transitions_d, fd)
+        return zone_transitions_d
+
+    def get_transitions_from_hourly_dts(tz='UTC', year=datetime.now().year):
+        zone_transitions = list()
+        curr_dt = datetime(year, 1, 1, 0, tzinfo=ZoneInfo(tz))
+        next_year = datetime(year + 1, 1, 1, 0, tzinfo=ZoneInfo(tz))
+        while curr_dt < next_year:
+            curr_offset = curr_dt.tzinfo.utcoffset(curr_dt)
+            next_dt = curr_dt + timedelta(seconds=3600)
+            if next_dt.tzinfo.utcoffset(next_dt) != curr_offset:
+                zone_transitions.append(next_dt)
+            curr_dt = next_dt
+        return zone_transitions
+
+    tzs = available_timezones()
+    filename = f'rz_data/zone_transitions_{year}.pickle'
+    if not overwrite:
+        try:
+            with open(filename, 'rb') as fd:
+                zone_transitions_d = pickle.load(fd)
+        except FileNotFoundError:
+            zone_transitions_d = write_transitions_dict(filename, year, tzs)
+    else:
+        zone_transitions_d = write_transitions_dict(filename, year, tzs)
+
+    return zone_transitions_d
+
+
+def get_repr_tz_dicts(zone_transition_d, year=datetime.now().year,
+                      overwrite=False):
+
+    def write_repr_tz_dicts(zone_transition_d, repr_filename, 
+                            all_to_repr_filename, year):
+        tzs = available_timezones()
+        tz_characteristics_d = dict()
+        all_to_repr_tz_d = dict()
+
+        for tz in tzs:
+            try:
+                zone_transitions = zone_transition_d[tz]
+            except KeyError:
+                zone_transitions = list()
+            std_offset, dst_offset = get_offsets(zone_transitions, tz, year)
+            tz_characteristics_d[tz] = (
+                    (std_offset, dst_offset), 
+                    tuple(zone_transitions))
+
+        unique_values_d = dict()
+        for key, value in tz_characteristics_d.items():
+            if value not in unique_values_d.values():
+                unique_values_d[key] = value
+        inverted_unique_values_d = {v: k for k, v in unique_values_d.items()}
+        for key, value in tz_characteristics_d.items():
+            all_to_repr_tz_d[key] = inverted_unique_values_d[value]
+
+        repr_tz_d = {k: v for (k, v) in tz_characteristics_d.items() if k in
+                     all_to_repr_tz_d.values()}
+
+        with open(repr_filename, 'wb') as fd:
+            pickle.dump(repr_tz_d, fd)
+        with open(all_to_repr_filename, 'wb') as fd:
+            pickle.dump(all_to_repr_tz_d, fd)
+
+        return all_to_repr_tz_d, repr_tz_d
+
+    repr_filename = f'rz_data/representative_tzs_{year}.pickle'
+    all_to_repr_filename = f'rz_data/all_to_repr_tzs_{year}.pickle'
+    if not overwrite:
+        try:
+            with open(repr_filename, 'rb') as fd:
+                repr_tz_d = pickle.load(fd)
+            with open(all_to_repr_filename, 'rb') as fd:
+                all_to_repr_tz_d = pickle.load(fd)
+        except FileNotFoundError:
+            all_to_repr_tz_d, repr_tz_d = write_repr_tz_dicts(
+                    zone_transition_d, repr_filename, 
+                    all_to_repr_filename, year)
+    else:
+        all_to_repr_tz_d, repr_tz_d = write_repr_tz_dicts(
+                zone_transition_d, repr_filename, 
+                all_to_repr_filename, year)
+
+    return all_to_repr_tz_d, repr_tz_d
+    
+
+def get_year(args=None):
+
+    def year_error(bad_year):
+        print(f'Entered string \'{bad_year}\' cannot be interpreted as a '
+              f'calendar year that can be used for time zone calculations.'
+              f'\nCalculating for the current year instead. Usage: '
+              f'{MIN_TZ_YEAR} <= year <= {MAX_TZ_YEAR}')
+        return datetime.now().year
+
+    try:
+        year = int(args.year)
+        _dt = datetime(year + 1, 1, 1)  # Prohibit datetime maximum year
+    except ValueError:
+        year = year_error(args.year)
+
+    if year < 1970:
+        year = year_error(args.year)
+
+    return year
+
+
+def get_offsets(zone_transitions, tz='UTC', year=datetime.now().year):
+
+    def calculate_offsets_from_repr_dts(test_zts):
+        std_offset_i = test_zts.index(
+                min(test_zts, key=lambda x: x.tzinfo.utcoffset(x)))
+        dst_offset_i = test_zts.index(
+                max(test_zts, key=lambda x: x.tzinfo.utcoffset(x)))
+        std_offset = test_zts[std_offset_i].tzinfo.utcoffset(
+                test_zts[std_offset_i])
+        dst_offset = test_zts[dst_offset_i].tzinfo.utcoffset(
+                test_zts[dst_offset_i])
+        # print(f'{tz} {std_offset} {dst_offset}')
+        return std_offset, dst_offset
+
+    test_zts = []
+    if len(zone_transitions) == 0:
+        test_zts = [datetime(year, 1, 1, 0, tzinfo=ZoneInfo(tz))]
+    elif len(zone_transitions) == 1:
+        zt = zone_transitions[0]
+        test_zts = [zt + timedelta(days=-1), zt + timedelta(days=1)]
+    elif len(zone_transitions) == 2:
+        test_zts = [zt + timedelta(days=1) for zt in zone_transitions]
+    else: 
+        print(f'FATAL BUILD ERROR. {tz} has outside of 0, 1, or 2 or more '
+              f'zone transitions and no code accounts for that')
+        exit()
+    
+    return calculate_offsets_from_repr_dts(test_zts)
+
+""" NOT YET USED IN LATEST VERSION """
+"""                                """
+
+"""
+
+
+def build_all_unique_remote_tz_sets(year=datetime.now().year):
+    "/""
+    Determines sets of remote time zones in which a worker, who is:
+      * based in a home time zone,
+      * having a certain contiguous availability every day in the work week,
+    may work a 09:00 to 17:00 shift within the remote time zones. 
+
+    There are, as of 2022, 13,477 such unique sets - ~750 sets for workers in
+    time zones with no daylight saving time, the remainder due to different
+    dates of daylight saving time zone transitions. "Close" time zones are
+    returned in a separate dictionary entry in each set. 
+
+    These are time zones in which the worker would be able to work except 
+    on DST shift dates, or except during times defined as within a week, 
+    within weeks, or within months.
+
+    This set of sets alone is sufficient to generate all maps, lists of valid
+    countries, cities, etc. without having to generate them for each user
+    request. 
+
+    User lookup specifiying different remote work start and stop times (that)
+    are also an 8 hour shift) can be adjusted in lookup.
+
+    This function needs to be rerun when there is an update to system tzdata.
+    System tzdata update can be controlled on Linux server, updated when there
+    is an update to the IANA tz database.
+    "/""
+
+    # TODO For different length shifts, might do well to instead calculate 
+    # for each remote 15-minute period (not 60 due to 30 and 45 minute offsets)
+    # and then construct workdays of these 15-minute periods. Will change maps
+    # though, so this is for another version.
+    all_to_repr_tz_d, repr_tz_d = get_representative_tz_dicts(year)
+    repr_tzs = [k for k in repr_tz_d.keys()]
+    zone_transitions = get_zone_transitions_dict(year)
+
+    # Try seeing how long just building with lookup works, with UTC d, for 
+    # all 71 (2022). Then check for consistent data and reverse. Then shift
+    # around the clock based on type?
+    utc_filename = f'tz_data/utc_based_results_dict_{year}.pickle'
+    all_filename = f'tz_data/results_dict_{year}.pickle'
+    all_set_filename = f'tz_data/results_dict_set_{year}.pickle'
+    try:
+        with open(utc_filename, 'rb') as f:
+            utc_d = pickle.load(f)
+    except FileNotFoundError:
+        utc_d = calculate_utc_tz_sets(repr_tz_d, year)
+        with open(utc_filename, 'wb') as f:
+            pickle.dump(utc_d, f)
+    try:
+        with open(all_filename, 'rb') as f:
+            all_unique_lookups = pickle.load(f)
+    except FileNotFoundError:
+        all_unique_lookups = dict()
+        count = 0
+        for tz in repr_tzs:
+            for i in range(0, 24):
+                for j in TEST_MINUTE_SET:
+                     for k in range(0, 24):
+                             for l in TEST_MINUTE_SET:
+                                     count = count + 1
+                                     key = f'{tz} {i} {j} {k} {l}'
+                                     print(f'{count}: {key}')
+                                     r_tzs = lookup(
+                                             utc_d, zone_transitions, 
+                                             worker_tz=tz, w_start_hr=i, 
+                                             w_start_min=j, w_end_hr=k, 
+                                             w_end_min=l)
+                                     all_unique_lookups[key] = r_tzs
+        with open(all_filename, 'wb') as outfile:
+            pickle.dump(all_unique_lookups, outfile)
+
+    all_unique_lookups_set = defaultdict(list)
+    for k, v in all_unique_lookups.items():
+        all_unique_lookups_set[str(v)].append(k)
+    with open(all_set_filename, 'wb') as outfile:
+            pickle.dump(all_unique_lookups_set, outfile)
+
+    return all_unique_lookups, all_unique_lookups_set
+
+
+def get_same_zone_transition_dst_tzs(tz_d, year=datetime.now().year):
+    zt_repr_tzs_path = (f'tz_data/transition_repr_tzs_updated_{year}.pickle')
+
+    try:
+        with open(zt_repr_tzs_path, 'rb') as infile:
+            same_zone_transition_tzs = pickle.load(infile)
+    except FileNotFoundError:
+        same_zone_transition_tzs = []
+        for k in tz_d.keys():
+            covered = False
+            if has_zone_transitions(k, year):
+                for tz in same_zone_transition_tzs:
+                    no_time = timedelta(seconds=0)
+                    if get_max_dst_distance_two_zones(tz, k) == no_time:
+                        covered = True
+                if not covered:
+                    same_zone_transition_tzs.append(k)
+        with open(zt_repr_tzs_path, 'wb') as outfile:
+            pickle.dump(same_zone_transition_tzs, outfile)
+
+    return same_zone_transition_tzs
 
 
 def get_max_dst_distance_two_zones(tz1, tz2, year=datetime.now().year):
@@ -57,16 +375,28 @@ def get_dst_zone_transition_non_alignment_types(year=datetime.now().year):
     return zt_nonalignment_d
 
 
-def lookup(zt_d, worker_tz='UTC', year=datetime.now().year, w_start_hr=17,
-           w_start_min=0, w_end_hr=6, w_end_min=0, r_start_hr=9,
-           r_start_min=0, r_end_hr=17, r_end_min=0):
+def get_utc_dict(year=datetime.now().year):
+    filename = f'tz_data/utc_based_results_dict_{year}.pickle'
+    with open(filename, 'rb') as f:
+        d = pickle.load(f)
+    return d
+
+
+def lookup(utc_d, zt_d, worker_tz='UTC', year=datetime.now().year, 
+           w_start_hr=17, w_start_min=0, w_end_hr=6, w_end_min=0,
+           r_start_hr=9, r_start_min=0, r_end_hr=17, r_end_min=0):
 
     def to_utc(month, day, w_hr, w_min):
         return datetime(year, month, day, w_hr, w_min, 
                         tzinfo=ZoneInfo(worker_tz)).astimezone(ZoneInfo('UTC'))
 
+    def time_that_day(dt, hour, minute):
+        dt.hour = hour
+        dt.minute = minute
+        return dt
+
     def is_southern_hemisphere(dts):
-        """ Direction of DST transition """
+        "/"" Direction of DST transition "/""
         if dts.index(min(dts, key=lambda x: x.tzinfo.utcoffset(x))):
             return True
         else:
@@ -77,21 +407,21 @@ def lookup(zt_d, worker_tz='UTC', year=datetime.now().year, w_start_hr=17,
     failed_but_within_weeks = []
     failed = []
 
-    filename = f'tz_data/utc_based_results_dict_{year}.pickle'
-    with open(filename, 'rb') as f:
-        d = pickle.load(f)
     if worker_tz == 'UTC':
-        lookup_str = (f'UTC+00:00 {w_start_hr} {w_start_min} {w_end_hr} '
-                      f'{w_end_min}')
-        remote_tzs = d[lookup_str]
+        start_hr, start_min = w_start_hr, w_start_min
+        end_hr, end_min = w_end_hr, w_end_min
+        lookup_str = (f'UTC+00:00 {start_hr} {start_min} {end_hr} {end_min}')
+        remote_tzs = utc_d[lookup_str]
     elif not has_zone_transitions(worker_tz):
         # For a time zone without DST it doesn't matter what day we use to get
         # equivalent UTC time. 
         utc_start_dt = to_utc(6, 1, w_start_hr, w_start_min)
         utc_end_dt = to_utc(6, 1, w_end_hr, w_end_min)
-        lookup_str = (f'UTC+00:00 {utc_start_dt.hour} {utc_start_dt.minute}'
-                      f' {utc_end_dt.hour} {utc_end_dt.minute}')
-        remote_tzs = d[lookup_str]
+        start_hr, start_min = utc_start_dt.hour, utc_start_dt.minute
+        end_hr, end_min = utc_end_dt.hour, utc_end_dt.minute
+        lookup_str = (f'UTC+00:00 {start_hr} {start_min} {end_hr} {end_min}')
+        remote_tzs = utc_d[lookup_str]
+       
     # DST time zone
     else:
         # Use the day AFTER zone transitions for defining UTC offset to avoid 
@@ -117,15 +447,23 @@ def lookup(zt_d, worker_tz='UTC', year=datetime.now().year, w_start_hr=17,
         is_southern = is_southern_hemisphere(local_transitions)
         dst_start_dt = utc_start_dts[0] if is_southern else utc_start_dts[1]
         std_end_dt = utc_end_dts[1] if is_southern else utc_end_dts[0]
+        start_hr, start_min = dst_start_dt.hour, dst_start_dt.minute
+        end_hr, end_min = std_end_dt.hour, std_end_dt.minute
         
-        lookup_str = (f'UTC+00:00 {dst_start_dt.hour} {dst_start_dt.minute}'
-                      f' {std_end_dt.hour} {std_end_dt.minute}')
-        whole_range = d[lookup_str]
+        lookup_str = (f'UTC+00:00 {start_hr} {start_min} {end_hr} {end_min}')
+        remote_tzs = utc_d[lookup_str]
+        whole_range = utc_d[lookup_str]
 
         # Figure out a way to check only at temporal edges, reduce expense TODO
         remote_tzs = list(whole_range)
+        
         for r_tz_tuple in whole_range:
-            r_tz = r_tz_tuple[0]
+            # TODO why is sometimes (with different lookup_str) r_tz_tuple 
+            # not the tuple but the tz alone already. Fixing with a hack, but 
+            # need to check the underlying problem.
+            r_tz = r_tz_tuple[0] if isinstance(r_tz_tuple, tuple) else r_tz_tuple
+            r_test_zts = [zt + timedelta(days=1) for zt in zt_d[r_tz]]
+           
             if 0 < worker_can_work_in_tz(worker_tz, r_tz, zt_d, test_zts,
                                          year=year, w_start_hr=w_start_hr, 
                                          w_start_min=w_start_min, 
@@ -136,10 +474,13 @@ def lookup(zt_d, worker_tz='UTC', year=datetime.now().year, w_start_hr=17,
                                              w_end_hr, w_end_min),
                                          r_length=shift_length(
                                              r_start_hr, r_start_min,
-                                             r_end_hr, r_end_min)):
+                                             r_end_hr, r_end_min),
+                                         r_test_zts=r_test_zts):
                 remote_tzs.remove(r_tz_tuple)
+
             w_repr_tz = all_to_repr_tz_d[worker_tz]
             r_repr_tz = all_to_repr_tz_d[r_tz]
+            
             # Get range of time where remote work fails due to misaligned DST
             try:
                 misalignment_category = misalignment_d[(w_repr_tz, r_repr_tz)]
@@ -179,7 +520,7 @@ def lookup(zt_d, worker_tz='UTC', year=datetime.now().year, w_start_hr=17,
 def calculate_remote_tzs(repr_tz_d, worker_tz='UTC', year=datetime.now().year,
                          w_start_hr=19, w_start_min=0, w_end_hr=7, w_end_min=0,
                          r_start_hr=9, r_start_min=0, r_end_hr=17, r_end_min=0):
-    """
+    "/""
     Determines time zones in which a worker based in worker_tz can work remotely
     given the worker's availability and the remote shift time. These are time
     zones that are within the worker's geographic range year-round, i.e. time
@@ -207,7 +548,7 @@ def calculate_remote_tzs(repr_tz_d, worker_tz='UTC', year=datetime.now().year,
     :param r_end_hr: remote local clock time in hours at time shift ends
     :param r_end_min: remote local clock time in minutes at time shift ends
     :return: list of tuples (time zone name, standard time offset, DST offset)
-    """
+    "/""
     remote_repr_tzs = []
     w_shift = shift_length(w_start_hr, w_start_min, w_end_hr, w_end_min)
     r_shift = shift_length(r_start_hr, r_start_min, r_end_hr, r_end_min)
@@ -223,6 +564,9 @@ def calculate_remote_tzs(repr_tz_d, worker_tz='UTC', year=datetime.now().year,
                                                 year)
     # Get list of time zones where both standard and any DST in worker's range
     for tz in repr_tz_d:
+        if tz in ['Africa/Casablanca', 'Africa/El_Aaiun']:
+            print(tz)
+        r_test_zts = zone_transitions[tz]
         failed_days = worker_can_work_in_tz(worker_tz, tz, zone_transitions,
                                             w_zone_transitions,
                                             year=datetime.now().year,
@@ -233,14 +577,33 @@ def calculate_remote_tzs(repr_tz_d, worker_tz='UTC', year=datetime.now().year,
                                                 w_end_hr, w_end_min),
                                             r_length=shift_length(
                                                 r_start_hr, r_start_min,
-                                                r_end_hr, r_end_min))
+                                                r_end_hr, r_end_min),
+                                            r_test_zts=r_test_zts)
         standard_offset = get_standard_offset(tz, year)
         dst_offset = (get_standard_offset(tz, year)
                       if not has_zone_transitions(tz, year) else
                       get_standard_offset(tz, year) + timedelta(seconds=3600))
+
+        standard_offset, dst_offset = get_offsets(r_test_zts, tz=tz, year=year)
         if failed_days == 0:
             remote_repr_tzs.append((tz, standard_offset, dst_offset))
     return remote_repr_tzs
+
+
+
+
+def to_hours(dt):
+    return dt.seconds / 3600
+
+def to_minutes(dt):
+    return dt.seconds / 60
+
+def adjust_by_hours(dt, hours):
+    return dt + timedelta(seconds=hours*3600)
+
+
+def adjust_by_minutes(dt, minutes):
+    return dt + timedelta(seconds=minutes*60)
 
 
 def calculate_utc_tz_sets(repr_tz_d, year=datetime.now().year):
@@ -259,6 +622,8 @@ def calculate_utc_tz_sets(repr_tz_d, year=datetime.now().year):
                         w_start_min=w_start_min,
                         w_end_hr=w_end_hr,
                         w_end_min=w_end_min))
+                    
+                    print(utc_results[k])
                     print(f'{w_start_hr} {w_start_min} {w_end_hr} {w_end_min}')
     s = set(v for v in utc_results.values())
     filename_all = f'tz_data/utc_based_results_dict_{year}.pickle'
@@ -335,68 +700,6 @@ def get_hourly_datetimes(tz='UTC', year=datetime.now().year):
     return dts
 
 
-def get_representative_tz_dicts(year=datetime.now().year):
-    """
-    Once representative time zones are determined per year per tz database
-    update, there is no need to redetermine them. So first check to see if
-    this has already been done (result kept in a pickle, as JSON can't serialize
-    datetimes, then if not, run rest of function.
-    :param year:
-    :return:
-    """
-    repr_tzs_updated_path = f'tz_data/repr_tzs_updated_{year}.pickle'
-    try:
-        with open(repr_tzs_updated_path, 'rb') as infile:
-            old_update = pickle.load(infile)
-            if old_update + timedelta(days=7) > datetime.now():
-                repr_path = f'tz_data/repr_tz_d_{year}.pickle'
-                all_to_repr_path = f'tz_data/all_to_repr_tz_d_{year}.pickle'
-                with open(repr_path, 'rb') as infile1:
-                    repr_tz_d = pickle.load(infile1)
-                with open(all_to_repr_path, 'rb') as infile2:
-                    all_to_repr_tz_d = pickle.load(infile2)
-                return all_to_repr_tz_d, repr_tz_d
-
-    except FileNotFoundError:
-        # Consider remote tz-boundary-builder data newer if no update file.
-        print(f'ERROR: file containing latest determination of representative '
-              f'time zones for {year} not found. Creating...')
-        with open(repr_tzs_updated_path, 'wb') as outfile:
-            pickle.dump(datetime.now(), outfile)
-
-    all_tzs = available_timezones()
-    zone_transition_dict = get_zone_transitions_dict(year)
-    tz_characteristics_dict = {}
-    all_to_repr_tz_d = {}
-
-    for tz in all_tzs:
-        try:
-            zone_transitions = zone_transition_dict[tz]
-        except KeyError:
-            zone_transitions = []
-        standard_offset = get_standard_offset(tz, year)
-        tz_characteristics_dict[tz] = (standard_offset, tuple(zone_transitions))
-
-    unique_values_dict = {}
-    for key, value in tz_characteristics_dict.items():
-        if value not in unique_values_dict.values():
-            unique_values_dict[key] = value
-    inverted_unique_values_dict = {v: k for k, v in unique_values_dict.items()}
-    for key, value in tz_characteristics_dict.items():
-        all_to_repr_tz_d[key] = inverted_unique_values_dict[value]
-
-    repr_tz_d = {k: v for (k, v) in tz_characteristics_dict.items() if k in
-                 all_to_repr_tz_d.values()}
-
-    repr_tz_d_path = f'tz_data/repr_tz_d_{year}.pickle'
-    all_to_repr_tz_d_path = f'tz_data/all_to_repr_tz_d_{year}.pickle'
-    with open(repr_tz_d_path, 'wb') as outfile:
-        pickle.dump(repr_tz_d, outfile)
-    with open(all_to_repr_tz_d_path, 'wb') as outfile:
-        pickle.dump(all_to_repr_tz_d, outfile)
-
-    return all_to_repr_tz_d, repr_tz_d
-
 
 def get_standard_offset(tz='UTC', year=datetime.now().year):
     has_zt = has_zone_transitions(tz, year)
@@ -446,69 +749,14 @@ def get_w_zone_transitions(zone_transitions,
     return w_zone_transitions
 
 
-def get_zone_transitions_from_datetime_list(dts):
-    zone_transitions = []
-    current_offset = dts[0].tzinfo.utcoffset(dts[0])
-    for d in dts:
-        if d.tzinfo.utcoffset(d) != current_offset:
-            zone_transitions.append(d)
-            current_offset = d.tzinfo.utcoffset(d)
-    return zone_transitions
 
-
-def get_zone_transitions_dict(year=datetime.now().year):
-    """ Retrieves time zone transition dates (currently from file) for a
-        particular calendar year. Uses write_zone_transitions(year) to write
-        dictionary to file if it does not already exist.
-
-        :param year: The calendar year to look up, defaults to
-            datetime.now().year attribute
-        :type year: int
-        :return: A dictionary per year with all time zones (IANA tz database)
-            key = time zone name, value = list of datetimes on which occurred
-            (or are predicted to occur) zone transitions
-        :rtype: dict
-    """
-    filename = f'tz_data/zone_transitions_{year}.pickle'
-    try:
-        with open(filename, 'rb') as fd:
-            zone_transitions = pickle.load(fd)
-    except FileNotFoundError:
-        write_zone_transitions(filename, year)
-        with open(filename, 'rb') as fd:
-            zone_transitions = pickle.load(fd)
-    return zone_transitions
-
-
-def get_year(args):
-    prompt = 'Calculate all remote time zone sets for which calendar year? '
-    year_str = args[1] if len(args) < 1 else input(prompt)
-
-    def year_error(bad_year):
-        print(f'Entered string \'{bad_year}\' cannot be interpreted as a '
-              f'calendar year that can be used for time zone calculations.'
-              f'\nCalculating for the current year instead. Usage: '
-              f'{MIN_TZ_YEAR} <= year <= {MAX_TZ_YEAR}')
-
-        return datetime.now().year
-
-    try:
-        year = int(year_str)
-        _dt = datetime(year + 1, 1, 1)  # Prohibit datetime maximum year
-    except ValueError:
-        year = year_error(year_str)
-
-    if year < 1970:
-        year = year_error(year_str)
-
-    return year
 
 
 def has_tbb_updated():
-    """ Check if Evan Siroky's timezone-boundary-builder has updated. This is
+    "/"" Check if Evan Siroky's timezone-boundary-builder has updated. This is
     used to determine when maps need to be redrawn.
     :rtype: bool
-    """
+    "/""
     tbb_data_path = 'tz_data/tbb_json_download.json'
     tbb_url = ('https://api.github.com/repos/evansiroky/' +
                'timezone-boundary-builder/releases/latest')
@@ -552,12 +800,12 @@ def has_tbb_updated():
 
 
 def has_tz_updated():
-    """
+    "/""
     Not ready yet. Wait until deployment to server, as will be able to fetch
     updates to tz database when available and run relevant functions once server
     OS update is complete. These functions include re-selecting representative
     time zones, re-calculating correct remote zones, and re-drawing maps.
-    """
+    "/""
     # TODO when deployed to server
     # For right now manually True while creating first data, then set to False
     # until update workflow is ready.
@@ -565,7 +813,7 @@ def has_tz_updated():
 
 
 def has_zone_transitions(tz='UTC', year=datetime.now().year):
-    """ Have not found a datetime equivalent for time.timezone() and
+    "/"" Have not found a datetime equivalent for time.timezone() and
         time.altzone(), which would allow a simple check whether a time zone
         currently has DST.
 
@@ -589,7 +837,7 @@ def has_zone_transitions(tz='UTC', year=datetime.now().year):
         :type year: int
         :return: Whether a time zone has zone transitions in that year's dict
         :rtype: bool
-    """
+    "/""
     # TODO allow argument to be an arbitrary datetime span, not just a
     # calendar year.
 
@@ -605,34 +853,7 @@ def has_zone_transitions(tz='UTC', year=datetime.now().year):
         zone_transitions = zone_transition_dict[tz]
         return len(zone_transitions) > 0
     except KeyError:
-        raise
-
-
-def write_zone_transitions(filename, year=datetime.now().year):
-    tzs = available_timezones()
-    zone_transitions_dict = {}
-
-    # For each time zone, create for the calendar year all hourly datetimes.
-    # Iterate through the list of datetimes, adding ones to a zone transition
-    #   list when the UTC offset differs from that of the previous hour.
-    # Add these lists to dictionary and write to file.
-    # NOTE: Archaic zone transitions did not necessarily occur on the hour.
-    # TODO: Account for the above, low priority as not generally used for past.
-
-    for tz in tzs:
-        dts = get_hourly_datetimes(tz, year)
-        zone_transitions = get_zone_transitions_from_datetime_list(dts)
-        zone_transitions_dict[tz] = zone_transitions
-        """
-        # Would be faster to use some already determined transition object
-        # but pytz data not compatible with zoneinfo data
-        dts = get_zone_transitions_pytz(tz=tz, year=year)
-        zone_transitions = get_zone_transitions_from_datetime_list(dts)
-        zone_transitions_dict[tz] = zone_transitions
-        """
-
-    with open(filename, 'wb') as fd:
-        pickle.dump(zone_transitions_dict, fd)
+        return False  # TODO or return to raise?
 
 
 def remote_day_within_worker_day(w_bounds):
@@ -690,11 +911,15 @@ def worker_can_work_in_tz(w_tz, r_tz, zone_transitions,
                           w_start_hr=17, w_start_min=0,
                           w_length=timedelta(seconds=8 * 3600),
                           r_start_hr=9, r_start_min=0,
-                          r_length=timedelta(seconds=8 * 3600)):
+                          r_length=timedelta(seconds=8 * 3600),
+                          r_test_zts=None):
 
     # Determine test dates throughout the year, wrt DST shift dates.
-    test_dates = get_test_dates(w_tz, r_tz, year, zone_transitions,
-                                w_zone_transitions)
+    if r_test_zts is None or w_zone_transitions is None:
+        test_dates = get_test_dates(w_tz, r_tz, year, zone_transitions,
+                                    w_zone_transitions)
+    else:
+        test_dates = r_test_zts + w_zone_transitions
     # Beginning and end of worker availability, aligned with shifts on
     # the "same day" or the "next day" on sides of IDL.
     w_bounds = configure_starts_ends(w_tz, r_tz, year,
@@ -706,3 +931,153 @@ def worker_can_work_in_tz(w_tz, r_tz, zone_transitions,
      cannot_end_next_days) = remote_day_within_worker_day(w_bounds)
 
     return len(failed_days)
+
+
+def get_zone_transitions_dict(year=datetime.now().year, tzs=None):
+    "/"" Retrieves time zone transition dates (currently from file) for a
+        particular calendar year. Uses write_zone_transitions(year) to write
+        dictionary to file if it does not already exist.
+
+        :param year: The calendar year to look up, defaults to
+            datetime.now().year attribute
+        :type year: int
+        :return: A dictionary per year with all time zones (IANA tz database)
+            key = time zone name, value = list of datetimes on which occurred
+            (or are predicted to occur) zone transitions
+        :rtype: dict
+    "/""
+    filename = f'tz_data/zone_transitions_{year}.pickle'
+    try:
+        with open(filename, 'rb') as fd:
+            zone_transitions = pickle.load(fd)
+    except FileNotFoundError:
+        write_zone_transitions(filename, year, tzs=tzs)
+        with open(filename, 'rb') as fd:
+            zone_transitions = pickle.load(fd)
+    return zone_transitions
+
+
+def get_zone_transitions_from_datetime_list(dts):
+    zone_transitions = []
+    current_offset = dts[0].tzinfo.utcoffset(dts[0])
+    for d in dts:
+        if d.tzinfo.utcoffset(d) != current_offset:
+            zone_transitions.append(d)
+            current_offset = d.tzinfo.utcoffset(d)
+    return zone_transitions
+
+
+def write_zone_transitions(filename, year=datetime.now().year, tzs=None):
+    tzs = available_timezones() if tzs is None else tzs
+    zone_transitions_dict = {}
+
+    # For each time zone, create for the calendar year all hourly datetimes.
+    # Iterate through the list of datetimes, adding ones to a zone transition
+    #   list when the UTC offset differs from that of the previous hour.
+    # Add these lists to dictionary and write to file.
+    # NOTE: Archaic zone transitions did not necessarily occur on the hour.
+    # TODO: Account for the above, low priority as not generally used for past.
+
+    for tz in tzs:
+        dts = get_hourly_datetimes(tz, year)
+        zone_transitions = get_zone_transitions_from_datetime_list(dts)
+        zone_transitions_dict[tz] = zone_transitions
+        "/""
+        # Would be faster to use some already determined transition object
+        # but pytz data not compatible with zoneinfo data
+        dts = get_zone_transitions_pytz(tz=tz, year=year)
+        zone_transitions = get_zone_transitions_from_datetime_list(dts)
+        zone_transitions_dict[tz] = zone_transitions
+        "/""
+
+    with open(filename, 'wb') as fd:
+        pickle.dump(zone_transitions_dict, fd)
+
+
+def get_zone_transitions_dict(year=datetime.now().year, tzs=None):
+    "/"" Retrieves time zone transition dates (currently from file) for a
+        particular calendar year. Uses write_zone_transitions(year) to write
+        dictionary to file if it does not already exist.
+
+        :param year: The calendar year to look up, defaults to
+            datetime.now().year attribute
+        :type year: int
+        :return: A dictionary per year with all time zones (IANA tz database)
+            key = time zone name, value = list of datetimes on which occurred
+            (or are predicted to occur) zone transitions
+        :rtype: dict
+    "/""
+    filename = f'tz_data/zone_transitions_{year}.pickle'
+    try:
+        with open(filename, 'rb') as fd:
+            zone_transitions = pickle.load(fd)
+    except FileNotFoundError:
+        write_zone_transitions(filename, year, tzs=tzs)
+        with open(filename, 'rb') as fd:
+            zone_transitions = pickle.load(fd)
+    return zone_transitions
+
+
+def get_representative_tz_dicts(year=datetime.now().year, tzs=None,
+        zone_transition_d=None):
+    "/""
+    Once representative time zones are determined per year per tz database
+    update, there is no need to redetermine them. So first check to see if
+    this has already been done (result kept in a pickle, as JSON can't serialize
+    datetimes, then if not, run rest of function.
+    :param year:
+    :return:
+    "/""
+    repr_tzs_updated_path = f'tz_data/repr_tzs_updated_{year}.pickle'
+    try:
+        with open(repr_tzs_updated_path, 'rb') as infile:
+            old_update = pickle.load(infile)
+            if old_update + timedelta(days=7) > datetime.now():
+                repr_path = f'tz_data/repr_tz_d_{year}.pickle'
+                all_to_repr_path = f'tz_data/all_to_repr_tz_d_{year}.pickle'
+                with open(repr_path, 'rb') as infile1:
+                    repr_tz_d = pickle.load(infile1)
+                with open(all_to_repr_path, 'rb') as infile2:
+                    all_to_repr_tz_d = pickle.load(infile2)
+                return all_to_repr_tz_d, repr_tz_d
+
+    except FileNotFoundError:
+        # Consider remote tz-boundary-builder data newer if no update file.
+        print(f'ERROR: file containing latest determination of representative '
+              f'time zones for {year} not found. Creating...')
+        with open(repr_tzs_updated_path, 'wb') as outfile:
+            pickle.dump(datetime.now(), outfile)
+
+    all_tzs = available_timezones() if tzs is None else tzs
+    zone_transition_dict = get_zone_transitions_dict(year)
+    tz_characteristics_dict = {}
+    all_to_repr_tz_d = {}
+
+    for tz in all_tzs:
+        try:
+            zone_transitions = zone_transition_dict[tz]
+        except KeyError:
+            zone_transitions = []
+        standard_offset = get_standard_offset(tz, year)
+        tz_characteristics_dict[tz] = (standard_offset, tuple(zone_transitions))
+
+    unique_values_dict = {}
+    for key, value in tz_characteristics_dict.items():
+        if value not in unique_values_dict.values():
+            unique_values_dict[key] = value
+    inverted_unique_values_dict = {v: k for k, v in unique_values_dict.items()}
+    for key, value in tz_characteristics_dict.items():
+        all_to_repr_tz_d[key] = inverted_unique_values_dict[value]
+
+    repr_tz_d = {k: v for (k, v) in tz_characteristics_dict.items() if k in
+                 all_to_repr_tz_d.values()}
+
+    repr_tz_d_path = f'tz_data/repr_tz_d_{year}.pickle'
+    all_to_repr_tz_d_path = f'tz_data/all_to_repr_tz_d_{year}.pickle'
+    with open(repr_tz_d_path, 'wb') as outfile:
+        pickle.dump(repr_tz_d, outfile)
+    with open(all_to_repr_tz_d_path, 'wb') as outfile:
+        pickle.dump(all_to_repr_tz_d, outfile)
+
+    return all_to_repr_tz_d, repr_tz_d
+"""

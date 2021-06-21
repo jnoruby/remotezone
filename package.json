@@ -1,0 +1,26 @@
+{
+  "name": "rz",
+  "version": "1.0.0",
+  "description": "Determine time zones you can work in remotely. DST-aware. Links to job sites.",
+  "main": "rz.js",
+  "directories": {
+    "lib": "lib",
+    "test": "test"
+  },
+  "scripts": {
+    "test": "touch rz.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jnoruby/remotezone.git"
+  },
+  "keywords": [
+    "timezones"
+  ],
+  "author": "Michael Ruby",
+  "license": "UNLICENSED",
+  "bugs": {
+    "url": "https://github.com/jnoruby/remotezone/issues"
+  },
+  "homepage": "https://github.com/jnoruby/remotezone#readme"
+}

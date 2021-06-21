@@ -1,0 +1,33 @@
+admin.calculate_remote_tzs
+        # TODO calculate the other parts of the tuple when set of unique
+        # TODO remote zone lists is created, along with dictionary where key
+        # TODO is the remote zone list and value is list of worker zones and
+        # TODO times. That will also be ranges when accessing data from client
+        # TODO information
+admin.calculate_utc_tz_sets
+    # TODO just do UTC first, then apply with shift to all non-DST TZs.
+    # Same model and then shift for other smaller groups like Europe and Chile.
+    # TODO then make the process for non-DST to all much faster by
+    # just using subtraction to get a range, then check (always in)
+    # TODO then make the process for DST to all much faster by
+    # just using subtraction to get a (smaller DST-aware range),
+    # then (depending on day miss tolerances) subtract uncoordinated zone
+    # transition matches from the edge.
+    # TODO these will be matches for equivalent non-9 to 5 shifts also
+admin.create_remote_tz_sets
+    # TODO fix the above function to load pickle if exists
+    # TODO load pickle and create reverse set with key being timezone sets
+    # and value being a tuple of all of the UTC combos calculated
+    # n n n n (worker times) 9 0 17 0 (remote times)
+    # TODO change simple_shift function to add to those tuples
+    # TODO do the same to move remote shift times around the clock
+    # data are enough
+    # Then remove from these tuples for each non-DST time zones,
+    # successively, those which create no match for 2 hours a year
+    # those which create no match for a few days a year
+    # those which create no match for a few weeks a year
+admin.get_zone_transitions_dict:
+    # TODO allow argument to be an arbitrary datetime span, not just a
+    # calendar year.
+    # TODO make aware of any updates from zoneinfo (from system or tz data)
+    # and update those years (past, present, or future) on that update.

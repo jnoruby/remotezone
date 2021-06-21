@@ -1,0 +1,95 @@
+Find out why all of a sudden time zone lookup at UTC 0 0 23 0 (DST map count
+   check) is trying to load module tzdata. It is just because of the string "A"
+   where does that come from?
+
+
+The set of time zones output by a search may be considered correct at the time
+of the search. In many cases, results will remain stable for the foreseeable
+future. However, governments do modify their time zones (sometimes on short
+notice). For this reason we suggest users exercise caution in selecting remote
+work locations that are in time zones within one hour of each edge. These are
+highlighted in results — with a slightly lighter colour on the map, and with
+indicator icons in the lists of countries and cities.
+
+===
+
+Maps show the following types of time zones, colour-coded:
+    1a) Time zones always within worker "remote zone", which are not within one
+        hour of the edge. These are valid time zones on all days of the year,
+        and take any daylight saving time transitions used in one or both time
+        zones into account.
+    1b) Time zones always within worker "remote zone", which are within one hour
+        of the edge. These also take into account any daylight saving time
+        transitions, but are differentiated in colour for two reasons. a) any
+        change in time zone law may bring them out of worker's remote zone. b)
+        they are near the edge of the worker's zone, and may need to be excluded
+        for flexibility.
+     2) Time zones that are in the worker's remote zone with the exception of
+        two hours a year (a relevant DST transition is "off" by one hour because
+        time zones switch at the same local time rather than the same UTC time.
+        This is a rare result because it would involve work in an overnight
+        shift in the remote zone from somewhere else in the
+        not-perfectly-coordinated region, by someone whose availability is
+        strictly limited. e.g. a worker in Los Angeles who is only available
+        from 01:00 to 09:00 and needs to work a 02:00 to 10:00 shift in Calgary.
+        This would work every day except for on North American DST transition
+        days.
+     3) Time zones that are in the worker's remote zone with the exception of
+        less than a week. e.g. between countries following EU rules and those in
+        the Middle East who modify them to better fit local weekend definitions.
+     4) Time zones that would be in the worker's remote zone except for more
+        distant daylight saving time transitions, e.g. between the U.S./Canada/
+        Mexico border zone and most of Mexico, or between either and the
+        main European zone. Remote work here may still be possible with
+        additional defined flexibility on the part of the worker or employer.
+     5) Time zones that are definitely outside of the worker's remote zone
+        either for a full DST or standard time period, or for the full year.
+
+
+overnments do modify , sometimes on short notice,
+
+and for many . In most cases
+
+
+# Calculate representative time zones (same offset, transition dates) and
+    #   write to JSON
+    # Check status of system tz data - currently just daily check to see if
+    #   updated need until sure what system it will be running on.
+    # Check status of timezone-boundary-builder for maps.
+    # Calculate sets for all UTC hours, minute ranges for start and stop
+    #   for remote work from 09:00 to 17:00.
+    # From draft version remove need to check so many dts, just get datetime
+    #   and timedelta from zone transitions.
+    # Calculate equivalences for other remote work time periods through
+    #   addition, checking equality, goal being a lookup with worker_tz,
+    #   eight relevant integers that returns the value of a timezone set for
+    #   map
+    # In the same way apply this equivalence to all non-DST time zones, they
+    #   just being shifted around. DST in remote zones incorporated by checking
+    #   dts.
+    # Apply the same equivalences to DST time zones, just subtracting on the
+    #   edges potential remote time zones that would be a match because of
+    #   range alone but are not because of transition dates. Return blocked
+    #   times so user can make choice to pursue or not - especially if it's
+    #   only one day or 2 - 3 that or off, or even 2 weeks where schedule would
+    #   have to be adjusted
+    # Dart/Flutter UI: third page is direct links into job sites, and also
+    #   a place for donations (apple: in-app purchases) and a tongue-in-cheek
+    #   the developer is looking for remote work in these time zones here.
+    # Dart/Flutter UI: map loaded page (cities loaded) (countries loaded)
+    #   take that information also over into third page
+    # Dart/Flutter UI: At least have the click-on item be a clock that changes
+    #   based on selection (nice looking) if not being able to scroll it like
+    #   a combination chain lock. Although that's the UX that feels right.
+    # Connect the Python backend to the Dart/Flutter frontend with API.
+    # QGIS. Once all remote tz sets are known, programmatically run the Python
+    #   script to create all maps, combining timezone-boundary-builder data
+    #   with land/sea boundaries.
+    # Perhaps the 1 - 3 days, 3 - 15 days non-matches in different color
+    # User should be able to save a search as current, operational ones,
+    # and get updates if there are upcoming tz changes that affect the edges of
+    the geographic range.
+
+    user specify until end of cal year next cal year
+
+    Put on CentOS or whatever OS on server: Changes to the tz code and data are often propagated to clients via operating system updates, so client tz data can often be corrected by applying these updates. With GNU/Linux and similar systems, if your maintenance provider has not yet adopted the latest tz data, you can often short-circuit the process by tailoring the generic instructions in the tz README file and installing the latest data yourself.
